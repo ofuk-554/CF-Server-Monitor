@@ -1,11 +1,14 @@
 name: Deploy to Cloudflare Workers
 run-name: CFSM encrypted recovery point before CPU repair
 on:
+  push:
+    branches: [maintenance/cpu-recovery-20261027]
   workflow_dispatch:
 permissions:
   contents: read
 jobs:
   backup:
+    if: github.event_name == 'workflow_dispatch' || github.event.head_commit.message == 'chore: run authorized encrypted backup once'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
