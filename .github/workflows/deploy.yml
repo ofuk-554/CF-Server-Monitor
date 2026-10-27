@@ -42,7 +42,12 @@ jobs:
           node-version: '22'
 
       - name: 📦 Install dependencies
-        run: npm install
+        run: npm ci --no-audit --no-fund
+
+      - name: Verify Cron, history and agent compatibility
+        run: |
+          node --test test/cron-notification.test.js test/latest-timestamps.test.js test/latest-metrics-all.test.js test/metrics-broadcaster-agent-config.test.js test/history-query.test.js
+          npm run test:agent-config
 
       - name: 🏗️ Build frontend assets
         run: npm run build:frontend
@@ -54,6 +59,7 @@ jobs:
           main = "src/index.js"
           compatibility_date = "2024-12-01"
           compatibility_flags = ["nodejs_compat"]
+          keep_vars = true
 
           # 定时任务配置（UTC）
           # - 每分钟：执行离线节点检测
@@ -79,29 +85,58 @@ jobs:
           tag = "v1"
           new_sqlite_classes = ["MetricsBroadcaster"]
 
-          [vars]
-          API_SECRET = "SECRET_PLACEHOLDER"
-          API_USER_NAME = "USER_NAME_PLACEHOLDER"
-          CORS_ALLOWED_ORIGINS = "CORS_ORIGINS_PLACEHOLDER"
           WEOF
 
           # 替换占位符
           sed -i "s|D1_PLACEHOLDER|${{ secrets.D1_DATABASE_ID }}|g" wrangler.toml
-          sed -i "s|SECRET_PLACEHOLDER|${{ secrets.API_SECRET }}|g" wrangler.toml
-          sed -i "s|USER_NAME_PLACEHOLDER|${{ secrets.API_USER_NAME }}|g" wrangler.toml
-          sed -i "s|CORS_ORIGINS_PLACEHOLDER|${{ secrets.CORS_ALLOWED_ORIGINS }}|g" wrangler.toml
 
           echo "✅ wrangler.toml 已生成"
 
       # wrangler v4 的 `deploy` 会自动根据 wrangler.toml 中的 [[durable_objects.bindings]]
       # 声明创建 DO namespace（幂等：已存在则跳过），无需单独命令。
       # 前提：MetricsBroadcaster 类必须从 index.js 导出（已通过 src/index.js 实现）。
+      - name: Add only the two compatible nullable server fields
+        env:
+          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+          D1_DATABASE_ID: ${{ secrets.D1_DATABASE_ID }}
+        shell: bash
+        run: |
+          node --input-type=module <<'MIGRATE'
+          import assert from 'node:assert/strict';
+          import {createHash} from 'node:crypto';
+          assert.equal(process.env.CF_ACCOUNT_ID,'ac83bd8d9d175c1ac5f1cd6c507d49bd');
+          assert.equal(process.env.D1_DATABASE_ID,'a22d7612-6476-4be9-a7da-557de38f41b6');
+          const url='https://api.cloudflare.com/client/v4/accounts/'+process.env.CF_ACCOUNT_ID+'/d1/database/'+process.env.D1_DATABASE_ID+'/query';
+          async function query(sql){
+            const response=await fetch(url,{method:'POST',headers:{Authorization:'Bearer '+process.env.CF_API_TOKEN,'Content-Type':'application/json'},body:JSON.stringify({sql}),signal:AbortSignal.timeout(60000)});
+            const result=await response.json();
+            if(!response.ok || !result.success || !result.result?.[0]?.success) throw Error('D1 compatibility query failed, HTTP '+response.status);
+            return result.result[0].results;
+          }
+          const hash=value=>createHash('sha256').update(JSON.stringify(value)).digest('hex');
+          const before=await query('SELECT * FROM servers ORDER BY id');
+          const beforeSettings=await query('SELECT key,value FROM settings ORDER BY key');
+          const columns=await query('PRAGMA table_info(servers)');
+          const originalNames=columns.map(c=>c.name);
+          const project=rows=>rows.map(row=>Object.fromEntries(originalNames.map(name=>[name,row[name]])));
+          const added=[];
+          for(const [name,definition] of [['traffic_alert_percent','INTEGER DEFAULT NULL'],['traffic_alert_state','TEXT']]){
+            if(!originalNames.includes(name)){await query('ALTER TABLE servers ADD COLUMN '+name+' '+definition);added.push(name);}
+          }
+          const after=await query('SELECT * FROM servers ORDER BY id');
+          const afterSettings=await query('SELECT key,value FROM settings ORDER BY key');
+          assert.equal(hash(project(before)),hash(project(after)),'Existing server data changed');
+          assert.equal(hash(beforeSettings),hash(afterSettings),'Existing settings changed');
+          console.log(JSON.stringify({compatible:true,added,servers:after.length,existing_data_unchanged:true,settings_unchanged:true}));
+          MIGRATE
+
       - name: 🚀 Deploy to Cloudflare Workers
         uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CF_API_TOKEN }}
           accountId: ${{ secrets.CF_ACCOUNT_ID }}
-          wranglerVersion: '4'
+          wranglerVersion: '4.120.0'
           command: deploy
 
       - name: ✅ Deployment Success

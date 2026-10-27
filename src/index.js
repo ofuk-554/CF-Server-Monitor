@@ -152,6 +152,15 @@ async function fetchHistoryData(env, request, id, hours, columns, sys = null) {
     );
   } catch (e) {
     const message = e && e.message ? e.message : String(e);
+    if (/invalid history partition id/i.test(message)) {
+      debug('[History] 服务器未分配历史分区，无法按主键范围查询:', message);
+      return new Response(JSON.stringify({
+        message: 'historyPartitionNotAssigned'
+      }), {
+        status: 409,
+        headers: { 'Content-Type': 'application/json' }
+      });
+    }
     if (/no such column/i.test(message)) {
       debug('[History] 数据库字段缺失，可能尚未升级数据库:', message);
       return new Response(JSON.stringify({
@@ -196,7 +205,8 @@ export default {
       const search = target.search;
       target.pathname = '/admin';
       target.search = '';
-      target.hash = `admin${search}`;
+      // 与前端入口地址统一为 #/admin 形式；旧式 #admin 由前端归一化兼容
+      target.hash = `/admin${search}`;
       return Response.redirect(target.toString(), 302);
     }
 
@@ -430,10 +440,6 @@ export default {
         }
 
         if (setTurnstileVerified) {
-          const expires = Math.floor(Date.now() / 1000) + 3600;
-          const cookieData = { expires, verified: true, timestamp: Date.now() };
-          const encryptedData = await encryptTurnstileData(cookieData, env, sys);
-
           const finalHeaders = new Headers(response.headers);
           finalHeaders.set('Access-Control-Allow-Origin', request.headers.get('Origin') || '');
           finalHeaders.set('Access-Control-Allow-Credentials', 'true');
@@ -468,11 +474,15 @@ export default {
       if (day === 0 && hour === 0 && minute < 5) {
         debug('[Cron] 每周日0:00-0:05表轮换期间，跳过离线节点检测');
       } else {
+        // 两项检测共用本轮设置，避免偶数分钟再次强制刷新。
+        const siteSettings = await loadSiteSettings(env.DB, {
+          forceRefresh: !!env.METRICS_BROADCASTER && minute % 2 === 0
+        });
         debug('[Cron] 开始执行离线节点检测');
-        await checkOfflineNodes(env.DB);
+        await checkOfflineNodes(env.DB, { siteSettings });
         debug('[Cron] 离线节点检测完成');
         debug('[Cron] 开始执行资源负载告警检测');
-        await checkResourceAlerts(env);
+        await checkResourceAlerts(env, { siteSettings });
         debug('[Cron] 资源负载告警检测完成');
       }
     } else if (cron === '0 * * * *') {
