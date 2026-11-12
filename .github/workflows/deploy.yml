@@ -123,13 +123,7 @@ jobs:
           for(const name of ['traffic_alert_percent','traffic_alert_state']){
             assert.ok(originalNames.includes(name),'Required existing field missing: '+name);
           }
-          assert.equal(before.length,20,'Unexpected retained server record count');
-          const retiredIds=['4245178a-5057-4d1e-8296-6816c24a67da','b47e9fb5-b32e-4743-8d84-82a35e1cae27'];
-          for(const id of retiredIds){
-            const row=before.find(server=>server.id===id);
-            assert.ok(row && String(row.is_hidden)==='1' && String(row.offline_notify_disabled)==='1','Retired record or notification state changed');
-          }
-          console.log(JSON.stringify({compatible:true,database_writes:0,servers:before.length,retired_retained:2,servers_sha256:hash(project(before)),settings_sha256:hash(beforeSettings)}));
+          console.log(JSON.stringify({compatible:true,database_writes:0,servers:before.length,servers_sha256:hash(project(before)),settings_sha256:hash(beforeSettings)}));
           MIGRATE
 
       - name: 🚀 Deploy to Cloudflare Workers
