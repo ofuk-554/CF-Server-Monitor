@@ -95,7 +95,7 @@ jobs:
       # wrangler v4 的 `deploy` 会自动根据 wrangler.toml 中的 [[durable_objects.bindings]]
       # 声明创建 DO namespace（幂等：已存在则跳过），无需单独命令。
       # 前提：MetricsBroadcaster 类必须从 index.js 导出（已通过 src/index.js 实现）。
-      - name: Add only the two compatible nullable server fields
+      - name: Verify existing database fields and retained records without writes
         env:
           CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
           CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
@@ -120,15 +120,10 @@ jobs:
           const columns=await query('PRAGMA table_info(servers)');
           const originalNames=columns.map(c=>c.name);
           const project=rows=>rows.map(row=>Object.fromEntries(originalNames.map(name=>[name,row[name]])));
-          const added=[];
-          for(const [name,definition] of [['traffic_alert_percent','INTEGER DEFAULT NULL'],['traffic_alert_state','TEXT']]){
-            if(!originalNames.includes(name)){await query('ALTER TABLE servers ADD COLUMN '+name+' '+definition);added.push(name);}
+          for(const name of ['traffic_alert_percent','traffic_alert_state']){
+            assert.ok(originalNames.includes(name),'Required existing field missing: '+name);
           }
-          const after=await query('SELECT * FROM servers ORDER BY id');
-          const afterSettings=await query('SELECT key,value FROM settings ORDER BY key');
-          assert.equal(hash(project(before)),hash(project(after)),'Existing server data changed');
-          assert.equal(hash(beforeSettings),hash(afterSettings),'Existing settings changed');
-          console.log(JSON.stringify({compatible:true,added,servers:after.length,existing_data_unchanged:true,settings_unchanged:true}));
+          console.log(JSON.stringify({compatible:true,database_writes:0,servers:before.length,servers_sha256:hash(project(before)),settings_sha256:hash(beforeSettings)}));
           MIGRATE
 
       - name: 🚀 Deploy to Cloudflare Workers
